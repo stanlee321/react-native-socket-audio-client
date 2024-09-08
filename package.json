@@ -10,11 +10,16 @@
   },
   "dependencies": {
     "@react-native-community/slider": "^4.5.2",
+    "@react-navigation/bottom-tabs": "^6.6.1",
+    "@react-navigation/native": "^6.1.18",
+    "@simform_solutions/react-native-audio-waveform": "^2.0.0",
     "expo": "~51.0.28",
     "expo-av": "~14.0.7",
     "expo-status-bar": "~1.12.1",
     "react": "18.2.0",
-    "react-native": "0.74.5"
+    "react-native": "0.74.5",
+    "react-native-audio-recorder-player": "^3.6.11",
+    "react-native-gesture-handler": "^2.19.0"
   },
   "devDependencies": {
     "@babel/core": "^7.20.0",

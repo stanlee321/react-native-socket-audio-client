@@ -1,253 +1,127 @@
-import React, { useState, useEffect } from "react";
-import { View, Button, Text, StyleSheet } from "react-native";
-import Slider from '@react-native-community/slider';
-import { Audio, InterruptionModeIOS, InterruptionModeAndroid } from "expo-av";
+import React, { useState, useEffect, useCallback } from "react";
+import { View, Button, StyleSheet, Text } from "react-native";
+import { Audio } from 'expo-av';
+import { useAudioSettings } from '../context/AudioSettingsContext';
+import AudioWaveform from './AudioWaveform';
 
 const AudioRecorder: React.FC = () => {
+  const { amplification } = useAudioSettings();
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
   const [sound, setSound] = useState<Audio.Sound | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [audioData, setAudioData] = useState<string[]>([]);
-  const [inputGain, setInputGain] = useState(1);
-  const [amplification, setAmplification] = useState(1);
-  const MAX_AMPLIFICATION = 20; // New constant for maximum amplification
-  const [audioOutput, setAudioOutput] = useState<'speaker' | 'headphones'>('speaker');
+  const [audioUri, setAudioUri] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [audioData, setAudioData] = useState<number[]>([]);
 
-  // Remove the useEffect hook that was causing the issue
-  // useEffect(() => {
-  //   toggleAudioOutput();
-  //   // ...
-  // }, [audioOutput]);
+  useEffect(() => {
+    (async () => {
+      try {
+        console.log("Requesting audio permissions...");
+        const { status } = await Audio.requestPermissionsAsync();
+        console.log("Audio permission status:", status);
+        if (status !== 'granted') {
+          throw new Error('Audio permission not granted');
+        }
+        
+        console.log("Setting audio mode...");
+        await Audio.setAudioModeAsync({
+          allowsRecordingIOS: true,
+          playsInSilentModeIOS: true,
+        });
+        console.log("Audio mode set successfully");
+      } catch (error) {
+        console.error("Failed to set up audio:", error);
+        setErrorMessage("Failed to set up audio. Please check app permissions.");
+      }
+    })();
+  }, []);
 
-  async function startRecording() {
+  const startRecording = useCallback(async () => {
     try {
-      await Audio.requestPermissionsAsync();
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
-      });
-
+      console.log("Start recording function called");
       const newRecording = new Audio.Recording();
-      await newRecording.prepareToRecordAsync({
-        android: {
-          extension: ".m4a",
-          audioEncoder: Audio.AndroidAudioEncoder.AAC,
-          outputFormat: Audio.AndroidOutputFormat.MPEG_4,
-          numberOfChannels: 2,
-          bitRate: 128000,
-          sampleRate: 44100,
-        },
-        ios: {
-          extension: ".m4a",
-          audioQuality: Audio.IOSAudioQuality.MAX,
-          sampleRate: 44100,
-          numberOfChannels: 2,
-          bitRate: 128000,
-          linearPCMBitDepth: 16,
-          linearPCMIsBigEndian: false,
-          linearPCMIsFloat: false,
-        },
-        web: {
-          mimeType: 'audio/webm',
-          bitsPerSecond: 128000,
-        },
+      await newRecording.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+      newRecording.setOnRecordingStatusUpdate((status) => {
+        if (status.isRecording) {
+          setAudioData(prev => [...prev, status.metering || -160]);
+        }
       });
-      newRecording.setOnRecordingStatusUpdate(updateAudioData);
       await newRecording.startAsync();
-
       setRecording(newRecording);
       setIsRecording(true);
-      setAudioData([]);
-    } catch (err) {
-      console.error("Failed to start recording", err);
+      console.log("Recording started successfully");
+    } catch (error) {
+      console.error("Failed to start recording:", error);
+      setErrorMessage(`Failed to start recording: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
-  }
+  }, []);
 
-  async function stopRecording() {
-    if (!recording) return;
-
+  const stopRecording = useCallback(async () => {
     try {
-      setIsRecording(false);
+      if (!recording) {
+        console.error("No active recording");
+        return;
+      }
+      
+      console.log("Stopping recording...");
       await recording.stopAndUnloadAsync();
       const uri = recording.getURI();
-      console.log("Recording stopped and stored at", uri);
-      setRecording(null);
-
-      if (uri) {
-        // Normalize the amplification value to be between 0 and 1
-        const normalizedVolume = Math.min(1, amplification / MAX_AMPLIFICATION);
-        // Create a new sound object from the recorded audio
-        const { sound: newSound } = await Audio.Sound.createAsync(
-          { uri },
-          { volume: normalizedVolume }
-        );
-        setSound(newSound);
-        console.log("New sound object created with volume:", normalizedVolume);
-      } else {
-        console.error("No URI available for the recording");
-      }
-    } catch (error) {
-      console.error("Error stopping recording:", error);
       setIsRecording(false);
-      setRecording(null);
-    }
-  }
-
-  const updateAudioData = (status: Audio.RecordingStatus) => {
-    if (status.isRecording) {
-      const { durationMillis, metering } = status;
-      setAudioData((prevData) => [
-        ...prevData,
-        `${durationMillis},${metering}`,
-      ]);
-    }
-  };
-
-  async function playSound() {
-    if (!sound) {
-      console.error("No sound to play");
-      return;
-    }
-
-    try {
-      console.log("Playing Sound");
-      setIsPlaying(true);
-      
-      // Normalize the amplification value to be between 0 and 1
-      const normalizedVolume = Math.min(1, amplification / MAX_AMPLIFICATION);
-      await sound.setVolumeAsync(normalizedVolume);
-      
-      // Reset the sound to the beginning before playing
-      await sound.setPositionAsync(0);
-      
-      // Update audio routing before playing
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: false,
-        playsInSilentModeIOS: true,
-        staysActiveInBackground: true,
-        interruptionModeIOS: InterruptionModeIOS.DuckOthers,
-        interruptionModeAndroid: InterruptionModeAndroid.DuckOthers,
-        shouldDuckAndroid: true,
-        playThroughEarpieceAndroid: audioOutput === 'headphones',
-      });
-      
-      const playbackStatus = await sound.playAsync();
-      console.log("Playback status:", playbackStatus);
-
-      sound.setOnPlaybackStatusUpdate((status) => {
-        if (status.isLoaded) {
-          if (status.didJustFinish) {
-            console.log("Playback finished");
-            setIsPlaying(false);
-            // Reset the sound position after it finishes playing
-            sound.setPositionAsync(0);
-          }
-        } else {
-          if (status.error) {
-            console.error(`Playback error: ${status.error}`);
-          }
-        }
-      });
+      setAudioUri(uri);
+      console.log("Recording stopped. Audio URI:", uri);
     } catch (error) {
-      console.error("Error playing sound:", error);
-      setIsPlaying(false);
+      console.error("Failed to stop recording:", error);
+      setErrorMessage(`Failed to stop recording: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
-  }
+  }, [recording]);
 
-  async function stopSound() {
-    if (!sound) {
-      console.error("No sound to stop");
-      return;
-    }
-
+  const playSound = useCallback(async () => {
     try {
-      console.log("Stopping Sound");
-      await sound.stopAsync();
-      setIsPlaying(false);
-    } catch (error) {
-      console.error("Error stopping sound:", error);
-      setIsPlaying(false);
-    }
-  }
-
-  async function toggleAudioOutput() {
-    try {
-      const newOutput = audioOutput === 'speaker' ? 'headphones' : 'speaker';
-      
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
-        staysActiveInBackground: true,
-        interruptionModeIOS: InterruptionModeIOS.DuckOthers,
-        interruptionModeAndroid: InterruptionModeAndroid.DuckOthers,
-        shouldDuckAndroid: true,
-        playThroughEarpieceAndroid: newOutput === 'headphones',
-      });
-
-      setAudioOutput(newOutput);
-      console.log(`Audio output switched to ${newOutput}`);
-
-      // If there's an active sound, update its routing
-      if (sound) {
-        const status = await sound.getStatusAsync();
-        if (status.isLoaded) {
-          const wasPlaying = status.isPlaying;
-          if (wasPlaying) {
-            await sound.stopAsync();
-          }
-          await sound.setIsLoopingAsync(false);
-          await sound.unloadAsync();
-          const { sound: newSound } = await Audio.Sound.createAsync(
-            { uri: status.uri },
-            { shouldPlay: wasPlaying, volume: status.volume }
-          );
-          setSound(newSound);
-        }
+      if (audioUri) {
+        console.log("Starting playback...");
+        const { sound: newSound } = await Audio.Sound.createAsync({ uri: audioUri });
+        setSound(newSound);
+        await newSound.playAsync();
+        setIsPlaying(true);
+        console.log("Playback started");
       }
     } catch (error) {
-      console.error("Error switching audio output:", error);
+      console.error("Failed to play sound:", error);
+      setErrorMessage(`Failed to play sound: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
-  }
+  }, [audioUri]);
+
+  const stopSound = useCallback(async () => {
+    try {
+      if (sound) {
+        console.log("Stopping playback...");
+        await sound.stopAsync();
+        setIsPlaying(false);
+        console.log("Playback stopped");
+      }
+    } catch (error) {
+      console.error("Failed to stop sound:", error);
+      setErrorMessage(`Failed to stop sound: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }, [sound]);
 
   return (
     <View style={styles.container}>
-      <Text>Input Gain: {inputGain.toFixed(1)}</Text>
-      <Slider
-        style={styles.slider}
-        minimumValue={1}
-        maximumValue={5}
-        step={0.1}
-        value={inputGain}
-        onValueChange={setInputGain}
-      />
-      <Text>Playback Amplification: {amplification.toFixed(1)}</Text>
-      <Slider
-        style={styles.slider}
-        minimumValue={1}
-        maximumValue={MAX_AMPLIFICATION}
-        step={0.1}
-        value={amplification}
-        onValueChange={setAmplification}
-      />
+      {errorMessage && <Text style={styles.errorText}>{errorMessage}</Text>}
       <Button
         title={isRecording ? "Stop Recording" : "Start Recording"}
         onPress={isRecording ? stopRecording : startRecording}
       />
-      <Text style={styles.statusText}>
-        {isRecording ? "Recording..." : "Not recording"}
-      </Text>
-      <Text style={styles.dataText}>Audio data points: {audioData.length}</Text>
-      {sound && (
+      <View style={styles.waveformContainer}>
+        <AudioWaveform data={audioData} isActive={isRecording || isPlaying} />
+      </View>
+      {audioUri && (
         <Button
           title={isPlaying ? "Stop Playing" : "Play Recording"}
           onPress={isPlaying ? stopSound : playSound}
         />
       )}
-      <Button
-        title={`Switch to ${audioOutput === 'speaker' ? 'Headphones' : 'Speaker'}`}
-        onPress={toggleAudioOutput}
-      />
     </View>
   );
 };
@@ -258,17 +132,15 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     padding: 20,
   },
-  statusText: {
-    marginTop: 10,
-    fontSize: 16,
+  waveformContainer: {
+    height: 100,
+    width: '100%',
+    backgroundColor: '#f0f0f0',
+    marginVertical: 10,
   },
-  dataText: {
-    marginTop: 10,
-    fontSize: 14,
-  },
-  slider: {
-    width: 200,
-    height: 40,
+  errorText: {
+    color: 'red',
+    marginBottom: 10,
   },
 });
 
