@@ -4,7 +4,9 @@ import { Audio } from 'expo-av';
 import { useAudioSettings } from '../context/AudioSettingsContext';
 import AudioWaveform from './AudioWaveform';
 import { Platform } from 'react-native';
-import base64 from 'react-native-base64';
+
+// Add this line at the top of the file
+/// <reference path="../global.d.ts" />
 
 const SAMPLE_RATE = 44100;
 const NUM_CHANNELS = 1;
@@ -31,6 +33,11 @@ const AudioRecorder: React.FC = () => {
   const reconnectTimeoutRef = useRef<number | null>(null);
 
   const connectWebSocket = useCallback(() => {
+    if (!isCallActiveRef.current) {
+      console.log("Call is not active, skipping WebSocket connection");
+      return;
+    }
+
     console.log("Connecting WebSocket...");
     
     const wsUrl = Platform.OS === 'web' 
@@ -57,13 +64,12 @@ const AudioRecorder: React.FC = () => {
     socket.onclose = (event) => {
       console.log('WebSocket Disconnected', event.code, event.reason);
       setIsConnected(false);
-      setIsCallActive(false);
-      isCallActiveRef.current = false;
       setWsReadyState(WebSocket.CLOSED);
-      // Attempt to reconnect
       if (isCallActiveRef.current) {
         console.log("Attempting to reconnect...");
         reconnectTimeoutRef.current = setTimeout(connectWebSocket, RECONNECT_INTERVAL);
+      } else {
+        console.log("Call is not active, not attempting to reconnect");
       }
     };
 
@@ -75,15 +81,36 @@ const AudioRecorder: React.FC = () => {
 
     socket.onmessage = async (event) => {
       try {
-        const message = JSON.parse(event.data);
-        if (message.type === 'audio_output') {
+        if (event.data instanceof Blob) {
+          // Handle binary data (audio)
+          const arrayBuffer = await event.data.arrayBuffer();
           if (detailedLogging) {
-            console.log('Received audio data:', message.data.substring(0, 50) + '...');
+            console.log('Received binary audio data, length:', arrayBuffer.byteLength);
           }
           setLastReceivedTime(new Date());
-          // Handle received audio data if needed
+          // Process the received audio data here (e.g., play it or update the waveform)
+          // You might want to implement audio playback or visualization here
+        } else if (typeof event.data === 'string') {
+          // Handle text data
+          if (event.data.startsWith('{') && event.data.endsWith('}')) {
+            // Attempt to parse as JSON
+            const message = JSON.parse(event.data);
+            if (message.type === 'audio_output') {
+              if (detailedLogging) {
+                console.log('Received audio data:', message.data.substring(0, 50) + '...');
+              }
+              setLastReceivedTime(new Date());
+              // Handle received audio data if needed
+              // You might want to decode base64 audio data and play it here
+            } else {
+              console.log('Received non-audio message:', message);
+            }
+          } else {
+            // Handle non-JSON text data
+            console.log('Received non-JSON text data:', event.data);
+          }
         } else {
-          console.log('Received non-audio message:', message);
+          console.log('Received unknown data type:', typeof event.data);
         }
       } catch (error) {
         console.error('Error processing received message:', error);
@@ -91,30 +118,15 @@ const AudioRecorder: React.FC = () => {
     };
   }, [detailedLogging]);
 
-  const arrayBufferToBase64 = (buffer: ArrayBuffer): string => {
-    const bytes = new Uint8Array(buffer);
-    return base64.encode(String.fromCharCode.apply(null, bytes as unknown as number[]));
-  };
-
   const sendAudioData = useCallback(async (audioData: ArrayBuffer) => {
     if (webSocketRef.current && webSocketRef.current.readyState === WebSocket.OPEN) {
       try {
-        const base64Audio = base64.encode(
-          String.fromCharCode.apply(null, new Uint8Array(audioData) as unknown as number[])
-        );
-        const message = JSON.stringify({
-          type: 'audio_input',
-          data: base64Audio,
-          sample_rate: SAMPLE_RATE,
-          channels: NUM_CHANNELS,
-          sample_width: SAMPLE_WIDTH
-        });
-
-        webSocketRef.current.send(message);
+        // Send audio data as binary
+        webSocketRef.current.send(audioData);
         setLastSentTime(new Date());
 
         if (detailedLogging) {
-          console.log('Sent audio data, length:', audioData.byteLength);
+          console.log('Sent audio data, total length:', audioData.byteLength);
         }
       } catch (error) {
         console.error('Error in sendAudioData:', error);
@@ -285,6 +297,7 @@ const AudioRecorder: React.FC = () => {
       setIsConnected(false);
       setAudioData([]);
       audioBufferRef.current = [];
+      setWsReadyState(WebSocket.CLOSED);
       console.log("Call ended successfully");
     } catch (error) {
       console.error("Failed to end call:", error);
