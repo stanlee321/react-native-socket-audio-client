@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useMemo } from 'react';
 import { View, StyleSheet, Animated } from 'react-native';
 
 interface AudioWaveformProps {
@@ -6,39 +6,43 @@ interface AudioWaveformProps {
   data: number[];
 }
 
+const MAX_BARS = 50; // Limit the number of bars in the waveform
+
 const AudioWaveform: React.FC<AudioWaveformProps> = ({ isActive, data }) => {
   const animatedValues = useRef<Animated.Value[]>([]);
 
-  useEffect(() => {
-    // Ensure we have the correct number of animated values
-    while (animatedValues.current.length < data.length) {
+  const bars = useMemo(() => {
+    const limitedData = data.slice(-MAX_BARS);
+    while (animatedValues.current.length < limitedData.length) {
       animatedValues.current.push(new Animated.Value(0));
     }
-    while (animatedValues.current.length > data.length) {
-      animatedValues.current.pop();
-    }
+    return limitedData.map((value, index) => ({
+      value,
+      animated: animatedValues.current[index],
+    }));
+  }, [data]);
 
-    // Animate to new values
+  useEffect(() => {
     Animated.parallel(
-      data.map((value, index) =>
-        Animated.timing(animatedValues.current[index], {
-          toValue: isActive ? Math.max(0, (value + 160) / 160) : 0,
+      bars.map(bar =>
+        Animated.timing(bar.animated, {
+          toValue: isActive ? Math.max(0, (bar.value + 160) / 160) : 0,
           duration: 50,
           useNativeDriver: false,
         })
       )
     ).start();
-  }, [isActive, data]);
+  }, [isActive, bars]);
 
   return (
     <View style={styles.container}>
-      {animatedValues.current.map((animatedValue, index) => (
+      {bars.map((bar, index) => (
         <Animated.View
           key={index}
           style={[
             styles.bar,
             {
-              height: animatedValue.interpolate({
+              height: bar.animated.interpolate({
                 inputRange: [0, 1],
                 outputRange: ['0%', '100%'],
               }),
