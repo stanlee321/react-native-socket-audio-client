@@ -4,6 +4,7 @@ import { Audio } from 'expo-av';
 import { useAudioSettings } from '../context/AudioSettingsContext';
 import AudioWaveform from './AudioWaveform';
 import { Platform } from 'react-native';
+import * as FileSystem from 'expo-file-system';
 
 // Add this line at the top of the file
 /// <reference path="../global.d.ts" />
@@ -31,6 +32,8 @@ const AudioRecorder: React.FC = () => {
 
   const audioBufferRef = useRef<ArrayBuffer[]>([]);
   const reconnectTimeoutRef = useRef<number | null>(null);
+
+  const [audioPlayer, setAudioPlayer] = useState<Audio.Sound | null>(null);
 
   const connectWebSocket = useCallback(() => {
     if (!isCallActiveRef.current) {
@@ -89,7 +92,7 @@ const AudioRecorder: React.FC = () => {
           }
           setLastReceivedTime(new Date());
           // Process the received audio data here (e.g., play it or update the waveform)
-          // You might want to implement audio playback or visualization here
+          await playAudioData(arrayBuffer);
         } else if (typeof event.data === 'string') {
           // Handle text data
           if (event.data.startsWith('{') && event.data.endsWith('}')) {
@@ -101,7 +104,6 @@ const AudioRecorder: React.FC = () => {
               }
               setLastReceivedTime(new Date());
               // Handle received audio data if needed
-              // You might want to decode base64 audio data and play it here
             } else {
               console.log('Received non-audio message:', message);
             }
@@ -314,13 +316,50 @@ const AudioRecorder: React.FC = () => {
     }
   }, [isCallActive, startCall, endCall]);
 
+  const playAudioData = async (arrayBuffer: ArrayBuffer) => {
+    try {
+      // Convert ArrayBuffer to Base64
+      const base64Audio = arrayBufferToBase64(arrayBuffer);
+      
+      // Write to a temporary file
+      const tempFile = `${FileSystem.cacheDirectory}temp_audio_${Date.now()}.wav`;
+      await FileSystem.writeAsStringAsync(tempFile, base64Audio, { encoding: FileSystem.EncodingType.Base64 });
+
+      // Stop and unload previous audio if exists
+      if (audioPlayer) {
+        await audioPlayer.stopAsync();
+        await audioPlayer.unloadAsync();
+      }
+
+      // Create a new Audio.Sound object and play it
+      const { sound } = await Audio.Sound.createAsync(
+        { uri: tempFile },
+        { shouldPlay: true }
+      );
+      setAudioPlayer(sound);
+
+      // Clean up the temporary file after playback
+      sound.setOnPlaybackStatusUpdate(async (status) => {
+        if ('didJustFinish' in status && status.didJustFinish) {
+          await FileSystem.deleteAsync(tempFile);
+        }
+      });
+
+    } catch (error) {
+      console.error('Error playing audio:', error);
+    }
+  };
+
   useEffect(() => {
     return () => {
       if (recordingInterval.current) {
         clearInterval(recordingInterval.current);
       }
+      if (audioPlayer) {
+        audioPlayer.unloadAsync();
+      }
     };
-  }, []);
+  }, [audioPlayer]);
 
   return (
     <View style={styles.container}>
@@ -385,5 +424,17 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
 });
+
+const arrayBufferToBase64 = (buffer: ArrayBuffer): string => {
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+};
+
+declare function btoa(data: string): string;
 
 export default AudioRecorder;
