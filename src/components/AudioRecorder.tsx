@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
 import { View, Button, StyleSheet, Text, Switch } from "react-native";
-import { Audio } from 'expo-av';
+import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from 'expo-av';
 import { useAudioSettings } from '../context/AudioSettingsContext';
 import AudioWaveform from './AudioWaveform';
 import { Platform } from 'react-native';
@@ -91,7 +91,11 @@ const AudioRecorder: React.FC = () => {
             setLastReceivedTime(new Date());
             
             if (message.ai_audio) {
-              await playBase64Audio(message.ai_audio);
+              try {
+                await playBase64Audio(message.ai_audio);
+              } catch (audioError) {
+                console.error('Error playing AI audio:', audioError);
+              }
             }
             
             // Handle other fields like transcription, full_transcript, is_silent, ai_response if needed
@@ -157,16 +161,18 @@ const AudioRecorder: React.FC = () => {
         throw new Error('Audio recording permission not granted');
       }
 
+      // Set audio mode for recording
+      console.log("Setting audio mode for recording...");
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
         playsInSilentModeIOS: true,
         staysActiveInBackground: true,
+        interruptionModeIOS: InterruptionModeIOS.DoNotMix,
         shouldDuckAndroid: true,
-        playThroughEarpieceAndroid: false, // This ensures audio plays through speakers on Android
-        interruptionModeIOS: Audio.INTERRUPTION_MODE_IOS_DO_NOT_MIX,
-        interruptionModeAndroid: Audio.INTERRUPTION_MODE_ANDROID_DO_NOT_MIX,
+        interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+        playThroughEarpieceAndroid: false,
       });
-      console.log("Audio mode set");
+      console.log("Audio mode set for recording");
 
       const recordAndSend = async () => {
         console.log("recordAndSend called, isCallActiveRef:", isCallActiveRef.current);
@@ -318,27 +324,55 @@ const AudioRecorder: React.FC = () => {
         await audioPlayer.unloadAsync();
       }
 
+      // Set audio mode for playback
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: true,
+        interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+        shouldDuckAndroid: true,
+        interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+        playThroughEarpieceAndroid: false,
+      });
+
       // Create a new Audio.Sound object and play it
       const { sound } = await Audio.Sound.createAsync(
         { uri: tempFile },
-        { shouldPlay: true },
-        (status) => {
-          if (status.isLoaded) {
-            sound.setVolumeAsync(1.0); // Ensure full volume
-          }
-        }
+        { shouldPlay: true, volume: 1.0, isLooping: false }
       );
-      setAudioPlayer(sound);
 
-      // Clean up the temporary file after playback
-      sound.setOnPlaybackStatusUpdate(async (status) => {
-        if ('didJustFinish' in status && status.didJustFinish) {
-          await FileSystem.deleteAsync(tempFile);
-        }
-      });
+      if (sound) {
+        setAudioPlayer(sound);
+
+        // Clean up the temporary file after playback
+        sound.setOnPlaybackStatusUpdate(async (status) => {
+          if ('didJustFinish' in status && status.didJustFinish) {
+            await FileSystem.deleteAsync(tempFile);
+            // Reset audio mode for recording after playback
+            await Audio.setAudioModeAsync({
+              allowsRecordingIOS: true,
+              playsInSilentModeIOS: true,
+              staysActiveInBackground: true,
+              interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+              shouldDuckAndroid: true,
+              interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+              playThroughEarpieceAndroid: false,
+            });
+          }
+        });
+      } else {
+        console.error('Failed to create sound object');
+        await FileSystem.deleteAsync(tempFile);
+      }
 
     } catch (error) {
       console.error('Error playing audio:', error);
+      // Attempt to clean up the temporary file in case of error
+      try {
+        await FileSystem.deleteAsync(`${FileSystem.cacheDirectory}temp_audio_${Date.now()}.mp3`);
+      } catch (cleanupError) {
+        console.error('Error cleaning up temporary file:', cleanupError);
+      }
     }
   };
 
