@@ -84,32 +84,19 @@ const AudioRecorder: React.FC = () => {
 
     socket.onmessage = async (event) => {
       try {
-        if (event.data instanceof Blob) {
-          // Handle binary data (audio)
-          const arrayBuffer = await event.data.arrayBuffer();
-          if (detailedLogging) {
-            console.log('Received binary audio data, length:', arrayBuffer.byteLength);
-          }
-          setLastReceivedTime(new Date());
-          // Process the received audio data here (e.g., play it or update the waveform)
-          await playAudioData(arrayBuffer);
-        } else if (typeof event.data === 'string') {
-          // Handle text data
-          if (event.data.startsWith('{') && event.data.endsWith('}')) {
-            // Attempt to parse as JSON
-            const message = JSON.parse(event.data);
-            if (message.type === 'audio_output') {
-              if (detailedLogging) {
-                console.log('Received audio data:', message.data.substring(0, 50) + '...');
-              }
-              setLastReceivedTime(new Date());
-              // Handle received audio data if needed
-            } else {
-              console.log('Received non-audio message:', message);
+        if (typeof event.data === 'string') {
+          const message = JSON.parse(event.data);
+          if (message.type === 'transcription') {
+            console.log('Received transcription:', message.text);
+            setLastReceivedTime(new Date());
+            
+            if (message.ai_audio) {
+              await playBase64Audio(message.ai_audio);
             }
+            
+            // Handle other fields like transcription, full_transcript, is_silent, ai_response if needed
           } else {
-            // Handle non-JSON text data
-            console.log('Received non-JSON text data:', event.data);
+            console.log('Received unknown message type:', message.type);
           }
         } else {
           console.log('Received unknown data type:', typeof event.data);
@@ -118,7 +105,7 @@ const AudioRecorder: React.FC = () => {
         console.error('Error processing received message:', error);
       }
     };
-  }, [detailedLogging]);
+  }, []);
 
   const sendAudioData = useCallback(async (audioData: ArrayBuffer) => {
     if (webSocketRef.current && webSocketRef.current.readyState === WebSocket.OPEN) {
@@ -316,13 +303,10 @@ const AudioRecorder: React.FC = () => {
     }
   }, [isCallActive, startCall, endCall]);
 
-  const playAudioData = async (arrayBuffer: ArrayBuffer) => {
+  const playBase64Audio = async (base64Audio: string) => {
     try {
-      // Convert ArrayBuffer to Base64
-      const base64Audio = arrayBufferToBase64(arrayBuffer);
-      
-      // Write to a temporary file
-      const tempFile = `${FileSystem.cacheDirectory}temp_audio_${Date.now()}.wav`;
+      // Write base64 audio to a temporary file
+      const tempFile = `${FileSystem.cacheDirectory}temp_audio_${Date.now()}.mp3`;
       await FileSystem.writeAsStringAsync(tempFile, base64Audio, { encoding: FileSystem.EncodingType.Base64 });
 
       // Stop and unload previous audio if exists
