@@ -160,8 +160,11 @@ const AudioRecorder: React.FC = () => {
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
         playsInSilentModeIOS: true,
+        staysActiveInBackground: true,
         shouldDuckAndroid: true,
-        playThroughEarpieceAndroid: false,
+        playThroughEarpieceAndroid: false, // This ensures audio plays through speakers on Android
+        interruptionModeIOS: Audio.INTERRUPTION_MODE_IOS_DO_NOT_MIX,
+        interruptionModeAndroid: Audio.INTERRUPTION_MODE_ANDROID_DO_NOT_MIX,
       });
       console.log("Audio mode set");
 
@@ -318,7 +321,12 @@ const AudioRecorder: React.FC = () => {
       // Create a new Audio.Sound object and play it
       const { sound } = await Audio.Sound.createAsync(
         { uri: tempFile },
-        { shouldPlay: true }
+        { shouldPlay: true },
+        (status) => {
+          if (status.isLoaded) {
+            sound.setVolumeAsync(1.0); // Ensure full volume
+          }
+        }
       );
       setAudioPlayer(sound);
 
