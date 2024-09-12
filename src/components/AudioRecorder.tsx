@@ -1,9 +1,8 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
-import { View, Button, StyleSheet, Text, Switch } from "react-native";
+import { View, Button, StyleSheet, Text, Switch, Platform } from "react-native";
 import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from 'expo-av';
 import { useAudioSettings } from '../context/AudioSettingsContext';
 import AudioWaveform from './AudioWaveform';
-import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 
 // Add this line at the top of the file
@@ -17,7 +16,7 @@ const RECONNECT_INTERVAL = 5000; // 5 seconds
 const MAX_RETRY_ATTEMPTS = 3;
 const RETRY_DELAY = 1000; // 1 second
 
-const RECORDING_DURATION_MS = 2000; // 3 second
+const RECORDING_DURATION_MS = 1500; // 1 second
 
 const configureAudioSession = async () => {
   try {
@@ -28,12 +27,37 @@ const configureAudioSession = async () => {
       interruptionModeIOS: InterruptionModeIOS.DoNotMix,
       shouldDuckAndroid: true,
       interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
-      playThroughEarpieceAndroid: false,
+      playThroughEarpieceAndroid: false
     });
     console.log("Audio session configured successfully");
   } catch (error) {
     console.error("Error configuring audio session:", error);
     throw error;
+  }
+};
+
+const forceAudioToSpeaker = async (forPlayback = false) => {
+  try {
+    const audioMode = {
+      allowsRecordingIOS:false,
+      playsInSilentModeIOS: true,
+      staysActiveInBackground: true,
+      interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+      shouldDuckAndroid: true,
+      interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+      playThroughEarpieceAndroid: false,
+    };
+
+    if (Platform.OS === 'ios') {
+      audioMode.playsInSilentModeIOS = true;
+      // Force playback through speaker on iOS
+      audioMode.interruptionModeIOS = InterruptionModeIOS.MixWithOthers;
+    }
+
+    await Audio.setAudioModeAsync(audioMode);
+    console.log("Audio forced to speaker, playback mode:", forPlayback);
+  } catch (error) {
+    console.error("Error forcing audio to speaker:", error);
   }
 };
 
@@ -57,6 +81,12 @@ const AudioRecorder: React.FC = () => {
   const reconnectTimeoutRef = useRef<number | null>(null);
 
   const [audioPlayer, setAudioPlayer] = useState<Audio.Sound | null>(null);
+
+  const [isAudioRoutedToSpeaker, setIsAudioRoutedToSpeaker] = useState(true);
+
+  const ensureAudioToSpeaker = useCallback(() => {
+    forceAudioToSpeaker(true).catch(err => console.error("Error in ensureAudioToSpeaker:", err));
+  }, []);
 
   const connectWebSocket = useCallback(() => {
     if (!isCallActiveRef.current) {
@@ -208,7 +238,7 @@ const AudioRecorder: React.FC = () => {
 
         try {
           console.log("Starting new recording cycle");
-          await configureAudioSession();
+          // await configureAudioSession();
 
           // Add a small delay after configuring the audio session
           await new Promise<void>(resolve => setTimeout(resolve, 100));
@@ -309,6 +339,7 @@ const AudioRecorder: React.FC = () => {
       setIsCallActive(true);
       isCallActiveRef.current = true;
       console.log("isCallActive set to true, isCallActiveRef:", isCallActiveRef.current);
+      // await forceAudioToSpeaker(false); // Set for recording
       connectWebSocket();
       await startAudioInput();
       console.log("Call started successfully");
@@ -357,60 +388,49 @@ const AudioRecorder: React.FC = () => {
 
   const playBase64Audio = async (base64Audio: string) => {
     try {
-      // Write base64 audio to a temporary file
       const tempFile = `${FileSystem.cacheDirectory}temp_audio_${Date.now()}.mp3`;
       await FileSystem.writeAsStringAsync(tempFile, base64Audio, { encoding: FileSystem.EncodingType.Base64 });
 
-      // Stop and unload previous audio if exists
       if (audioPlayer) {
         await audioPlayer.stopAsync();
         await audioPlayer.unloadAsync();
       }
 
-      // Set audio mode for playback
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: false,
-        playsInSilentModeIOS: true,
-        staysActiveInBackground: true,
-        interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-        shouldDuckAndroid: true,
-        interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
-        playThroughEarpieceAndroid: false,
-      });
+      // // Force audio to speaker for playback
+      // await forceAudioToSpeaker(true);
 
-      // Create a new Audio.Sound object and play it
       const { sound } = await Audio.Sound.createAsync(
         { uri: tempFile },
-        { shouldPlay: true, volume: 1.0, isLooping: false }
+        { shouldPlay: false, volume: 1.0, isLooping: false }
       );
 
       if (sound) {
         setAudioPlayer(sound);
 
-        // Clean up the temporary file after playback
         sound.setOnPlaybackStatusUpdate(async (status) => {
           if ('didJustFinish' in status && status.didJustFinish) {
             await FileSystem.deleteAsync(tempFile);
-            // Reset audio mode for recording after playback
-            await Audio.setAudioModeAsync({
-              allowsRecordingIOS: true,
-              playsInSilentModeIOS: true,
-              staysActiveInBackground: true,
-              interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-              shouldDuckAndroid: true,
-              interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
-              playThroughEarpieceAndroid: false,
-            });
+            await sound.unloadAsync();
+            // Reset audio mode after playback
+            // await forceAudioToSpeaker(false);
+          } else if ('isPlaying' in status && status.isPlaying) {
+            // Ensure audio is routed to speaker during playback
+            // await forceAudioToSpeaker(true);
           }
         });
+
+        // Double-check audio routing before playing
+        // await forceAudioToSpeaker(true);
+        await sound.playAsync();
+
+        // Force audio to speaker again after a short delay
+        // setTimeout(() => forceAudioToSpeaker(true), 100);
       } else {
         console.error('Failed to create sound object');
         await FileSystem.deleteAsync(tempFile);
       }
-
     } catch (error) {
       console.error('Error playing audio:', error);
-      // Attempt to clean up the temporary file in case of error
       try {
         await FileSystem.deleteAsync(`${FileSystem.cacheDirectory}temp_audio_${Date.now()}.mp3`);
       } catch (cleanupError) {
@@ -419,16 +439,19 @@ const AudioRecorder: React.FC = () => {
     }
   };
 
-  useEffect(() => {
-    return () => {
-      if (recordingInterval.current) {
-        clearInterval(recordingInterval.current);
-      }
-      if (audioPlayer) {
-        audioPlayer.unloadAsync();
-      }
-    };
-  }, [audioPlayer]);
+  // useEffect(() => {
+  //   const setupAudioSession = async () => {
+  //     await forceAudioToSpeaker(false);
+  //   };
+
+  //   setupAudioSession();
+
+  //   return () => {
+  //     if (audioPlayer) {
+  //       audioPlayer.unloadAsync();
+  //     }
+  //   };
+  // }, []);
 
   return (
     <View style={styles.container}>
@@ -459,6 +482,7 @@ const AudioRecorder: React.FC = () => {
           onValueChange={setDetailedLogging}
         />
       </View>
+      <Text>Audio Routed to Speaker: {isAudioRoutedToSpeaker ? 'Yes' : 'No'}</Text>
     </View>
   );
 };
