@@ -14,6 +14,29 @@ const NUM_CHANNELS = 1;
 const SAMPLE_WIDTH = 2;
 const RECONNECT_INTERVAL = 5000; // 5 seconds
 
+const MAX_RETRY_ATTEMPTS = 3;
+const RETRY_DELAY = 1000; // 1 second
+
+const RECORDING_DURATION_MS = 2000; // 3 second
+
+const configureAudioSession = async () => {
+  try {
+    await Audio.setAudioModeAsync({
+      allowsRecordingIOS: true,
+      playsInSilentModeIOS: true,
+      staysActiveInBackground: true,
+      interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+      shouldDuckAndroid: true,
+      interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+      playThroughEarpieceAndroid: false,
+    });
+    console.log("Audio session configured successfully");
+  } catch (error) {
+    console.error("Error configuring audio session:", error);
+    throw error;
+  }
+};
+
 const AudioRecorder: React.FC = () => {
   const { amplification } = useAudioSettings();
   const [isCallActive, setIsCallActive] = useState(false);
@@ -30,7 +53,7 @@ const AudioRecorder: React.FC = () => {
 
   const recordingInterval = useRef<number | null>(null);
 
-  const audioBufferRef = useRef<ArrayBuffer[]>([]);
+  const audioBufferRef = useRef<string[]>([]);
   const reconnectTimeoutRef = useRef<number | null>(null);
 
   const [audioPlayer, setAudioPlayer] = useState<Audio.Sound | null>(null);
@@ -45,7 +68,7 @@ const AudioRecorder: React.FC = () => {
     
     const wsUrl = Platform.OS === 'web' 
       ? 'ws://localhost:8765'
-      : 'ws://192.168.1.6:8765'; // Replace with your development machine's IP address
+      : 'ws://192.168.1.6:8765/ws'; // Replace with your development machine's IP address
 
     console.log(`Attempting to connect to WebSocket at ${wsUrl}`);
     const socket = new WebSocket(wsUrl);
@@ -86,13 +109,13 @@ const AudioRecorder: React.FC = () => {
       try {
         if (typeof event.data === 'string') {
           const message = JSON.parse(event.data);
-          if (message.type === 'transcription') {
-            console.log('Received transcription:', message.text);
+          if (message.ai_response) {
             setLastReceivedTime(new Date());
-            
-            if (message.ai_audio) {
+            console.log('Received AUDIO:', message.transcription.full_transcript);
+            const audioData = message.ai_response.ai_audio
+            if (audioData) {
               try {
-                await playBase64Audio(message.ai_audio);
+                await playBase64Audio(audioData);
               } catch (audioError) {
                 console.error('Error playing AI audio:', audioError);
               }
@@ -100,7 +123,8 @@ const AudioRecorder: React.FC = () => {
             
             // Handle other fields like transcription, full_transcript, is_silent, ai_response if needed
           } else {
-            console.log('Received unknown message type:', message.type);
+
+            console.log('Received unknown message type:', message);
           }
         } else {
           console.log('Received unknown data type:', typeof event.data);
@@ -111,15 +135,24 @@ const AudioRecorder: React.FC = () => {
     };
   }, []);
 
-  const sendAudioData = useCallback(async (audioData: ArrayBuffer) => {
+  const sendAudioData = useCallback(async (audioData: string | ArrayBuffer) => {
     if (webSocketRef.current && webSocketRef.current.readyState === WebSocket.OPEN) {
       try {
-        // Send audio data as binary
-        webSocketRef.current.send(audioData);
+        let audioString: string;
+        if (audioData instanceof ArrayBuffer) {
+          // Convert ArrayBuffer to base64 string
+          audioString = arrayBufferToBase64(audioData);
+        } else {
+          audioString = audioData;
+        }
+        
+        // Send audio data as a JSON object with base64 encoded audio
+        const message = JSON.stringify({ audio: audioString });
+        webSocketRef.current.send(message);
         setLastSentTime(new Date());
 
         if (detailedLogging) {
-          console.log('Sent audio data, total length:', audioData.byteLength);
+          console.log('Sent audio data, total length:', message.length);
         }
       } catch (error) {
         console.error('Error in sendAudioData:', error);
@@ -127,7 +160,7 @@ const AudioRecorder: React.FC = () => {
       }
     } else {
       console.log('WebSocket not ready, buffering audio data');
-      audioBufferRef.current.push(audioData);
+      audioBufferRef.current.push(typeof audioData === 'string' ? audioData : arrayBufferToBase64(audioData));
     }
   }, [detailedLogging]);
 
@@ -163,88 +196,98 @@ const AudioRecorder: React.FC = () => {
 
       // Set audio mode for recording
       console.log("Setting audio mode for recording...");
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
-        staysActiveInBackground: true,
-        interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-        shouldDuckAndroid: true,
-        interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
-        playThroughEarpieceAndroid: false,
-      });
+      await configureAudioSession();
       console.log("Audio mode set for recording");
 
-      const recordAndSend = async () => {
+      const recordAndSend = async (retryCount = 0) => {
         console.log("recordAndSend called, isCallActiveRef:", isCallActiveRef.current);
         if (!isCallActiveRef.current) {
           console.log("Call is not active, stopping recording loop");
           return;
         }
 
-        console.log("Starting new recording cycle");
-        const recording = new Audio.Recording();
         try {
-          console.log("Preparing to record...");
-          await recording.prepareToRecordAsync({
-            android: {
-              extension: '.wav',
-              outputFormat: Audio.AndroidOutputFormat.DEFAULT,
-              audioEncoder: Audio.AndroidAudioEncoder.DEFAULT,
-              sampleRate: SAMPLE_RATE,
-              numberOfChannels: NUM_CHANNELS,
-            },
-            ios: {
-              extension: '.wav',
-              outputFormat: Audio.IOSOutputFormat.LINEARPCM,
-              audioQuality: Audio.IOSAudioQuality.HIGH,
-              sampleRate: SAMPLE_RATE,
-              numberOfChannels: NUM_CHANNELS,
-              bitRate: 16000,
-              linearPCMBitDepth: 16,
-              linearPCMIsBigEndian: false,
-              linearPCMIsFloat: false,
-            },
-            web: {
-              mimeType: 'audio/webm',
-              bitsPerSecond: 128000,
-            },
-          });
+          console.log("Starting new recording cycle");
+          await configureAudioSession();
 
-          console.log("Starting recording...");
-          await recording.startAsync();
-          console.log("Recording for 1 second...");
-          await new Promise<void>(resolve => setTimeout(resolve, 1000)); // Record for 1 second
-          console.log("Stopping recording...");
-          await recording.stopAndUnloadAsync();
-          console.log("Recording stopped");
+          // Add a small delay after configuring the audio session
+          await new Promise<void>(resolve => setTimeout(resolve, 100));
 
-          const { sound, status } = await recording.createNewLoadedSoundAsync();
-          if (status.isLoaded) {
-            const audioStatus = await sound.getStatusAsync();
-            if (audioStatus.isLoaded && audioStatus.uri) {
-              console.log("Fetching audio data...");
-              const response = await fetch(audioStatus.uri);
-              const arrayBuffer = await response.arrayBuffer();
-              console.log("Sending audio data...");
-              await sendAudioData(arrayBuffer);
+          const recording = new Audio.Recording();
+          try {
+            console.log("Preparing to record...");
+            await recording.prepareToRecordAsync({
+              android: {
+                extension: '.m4a',
+                outputFormat: Audio.AndroidOutputFormat.MPEG_4,
+                audioEncoder: Audio.AndroidAudioEncoder.AAC,
+                sampleRate: 44100,
+                numberOfChannels: 2,
+                bitRate: 128000,
+              },
+              ios: {
+                extension: '.m4a',
+                outputFormat: Audio.IOSOutputFormat.MPEG4AAC,
+                audioQuality: Audio.IOSAudioQuality.HIGH,
+                sampleRate: 44100,
+                numberOfChannels: 2,
+                bitRate: 128000,
+                linearPCMBitDepth: 16,
+                linearPCMIsBigEndian: false,
+                linearPCMIsFloat: false,
+              },
+              web: {
+                mimeType: 'audio/webm',
+                bitsPerSecond: 128000,
+              },
+            });
+
+            console.log("Starting recording...");
+            await recording.startAsync();
+            console.log(`Recording for ${RECORDING_DURATION_MS / 1000} seconds...`);
+            await new Promise<void>(resolve => setTimeout(resolve, RECORDING_DURATION_MS));
+            console.log("Stopping recording...");
+            await recording.stopAndUnloadAsync();
+            console.log("Recording stopped");
+
+            const uri = recording.getURI();
+            if (!uri) {
+              throw new Error("Failed to get recording URI");
             }
-            await sound.unloadAsync();
+
+            console.log("Reading recorded file...");
+            const fileContent = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+
+            console.log("Sending audio data...");
+            await sendAudioData(fileContent);
+
+            // Clean up the temporary file
+            await FileSystem.deleteAsync(uri, { idempotent: true });
+
+            // Reset retry count on successful recording
+            retryCount = 0;
+          } catch (error) {
+            console.error("Error in recording cycle:", error);
+            if (retryCount < MAX_RETRY_ATTEMPTS) {
+              console.log(`Retrying recording (Attempt ${retryCount + 1} of ${MAX_RETRY_ATTEMPTS})...`);
+              await new Promise<void>(resolve => setTimeout(resolve, RETRY_DELAY));
+              return recordAndSend(retryCount + 1);
+            } else {
+              console.error("Max retry attempts reached. Stopping recording loop.");
+              setErrorMessage("Failed to record audio after multiple attempts. Please try again later.");
+              return;
+            }
           }
 
           if (isCallActiveRef.current) {
             console.log("Scheduling next recording...");
-            setTimeout(recordAndSend, 0);
+            setTimeout(() => recordAndSend(0), 0);
           } else {
             console.log("Call is no longer active, stopping recording loop");
           }
         } catch (error) {
-          console.error("Error in recording cycle:", error);
-          setErrorMessage(`Error in recording cycle: ${error instanceof Error ? error.message : 'Unknown error'}`);
-          // Continue the recording loop even if there's an error
-          if (isCallActiveRef.current) {
-            console.log("Scheduling next recording despite error...");
-            setTimeout(recordAndSend, 1000);
-          }
+          console.error("Unhandled error in recordAndSend:", error);
+          setErrorMessage(`Unhandled error: ${error instanceof Error ? error.message : 'Unknown error'}`);
         }
       };
 
